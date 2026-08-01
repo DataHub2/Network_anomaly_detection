@@ -1,35 +1,37 @@
+
 from pyspark.sql.functions import current_timestamp, col
 
-# 1. Define the input volume path
 volume_path = "/Volumes/network_anomaly_detection/bronze/raw/"
 
-# 2. Read all raw CSV files in a single pass
 raw_df = (
     spark.read
     .option("header", "true")
     .option("inferSchema", "true")
+    .option("encoding", "ISO-8859-1")
     .csv(volume_path + "*.csv")
 )
 
-# 3. Clean column names to satisfy Delta Lake & SQL standards:
-# - Strip leading/trailing whitespaces (.strip())
-# - Convert characters to lower case (.lower())
-# - Replace spaces, slashes, and hyphens with underscores
 clean_cols = [
     col(f"`{c}`").alias(
         c.strip().lower().replace(" ", "_").replace("/", "_").replace("-", "_")
-    ) 
+    )
     for c in raw_df.columns
 ]
 
-# 4. Apply clean column names and append Unity Catalog metadata
 bronze_df = (
-    raw_df.select(*clean_cols)
+    raw_df
     .withColumn("_source_file", col("_metadata.file_name"))
     .withColumn("_ingested_at", current_timestamp())
+    .select(*clean_cols, "_source_file", "_ingested_at")
 )
 
-# 5. Write to Bronze Delta Table in Unity Catalog
+# Sanity before writing in.
+from collections import Counter
+dupes = [name for name, n in Counter(bronze_df.columns).items() if n > 1]
+if dupes:
+    print(f"Warning — dubble column name: {dupes}")
+
 bronze_df.write.mode("overwrite").saveAsTable("network_anomaly_detection.bronze.flows")
 
-print("Ingestion complete! Table 'network_anomaly_detection.bronze.flows' successfully created.")
+files_found = bronze_df.select("_source_file").distinct().count()
+print(f"Done: {bronze_df.count()} rows, {len(bronze_df.columns)} Columner, {files_found} source file")
